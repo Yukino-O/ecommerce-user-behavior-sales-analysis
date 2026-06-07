@@ -287,12 +287,6 @@ def save_tables(tables: dict[str, pd.DataFrame], quality: dict[str, int | str]) 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     POWERBI_DIR.mkdir(parents=True, exist_ok=True)
 
-    stale_files = ["country_metrics.csv", "country_gap.csv", "channel_limitation.csv"]
-    for filename in stale_files:
-        path = PROCESSED_DIR / filename
-        if path.exists():
-            path.unlink()
-
     for name, table in tables.items():
         table.to_csv(PROCESSED_DIR / f"{name}.csv", index=False, encoding="utf-8-sig")
 
