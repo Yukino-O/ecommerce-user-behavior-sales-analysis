@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -14,144 +15,167 @@ REPORT_DIR = ROOT / "reports"
 FIG_DIR = REPORT_DIR / "figures"
 POWERBI_DIR = REPORT_DIR / "powerbi"
 
-DATASET_XLSX = RAW_DIR / "online_retail_uci" / "Online Retail.xlsx"
-DATASET_URL = "https://archive.ics.uci.edu/dataset/352/online+retail"
+DATASET_CSV = RAW_DIR / "ecommerce_orders_2024_2025.csv"
+DATASET_CARD = RAW_DIR / "ecommerce_orders_2024_2025_README.md"
+DATASET_URL = "https://huggingface.co/datasets/millat/e-commerce-orders"
 
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
 
-def classify_category(description: str) -> str:
-    text = str(description).upper()
-    rules = [
-        ("家居装饰", ["HEART", "CANDLE", "LIGHT", "LANTERN", "FRAME", "CLOCK", "MIRROR", "WREATH", "DECORATION"]),
-        ("厨房餐具", ["CUP", "MUG", "PLATE", "BOWL", "TEA", "CAKE", "NAPKIN", "KITCHEN", "CUTLERY", "DOILEY"]),
-        ("礼品套装", ["GIFT", "SET", "BOX", "BAG", "WRAP", "RIBBON", "TAG", "CARD"]),
-        ("收纳用品", ["BASKET", "STORAGE", "DRAWER", "CABINET", "HOLDER", "TIDY", "RACK"]),
-        ("儿童用品", ["CHILD", "BABY", "DOLL", "TOY", "GAME", "LUNCH BOX", "JIGSAW"]),
-        ("服饰配件", ["SCARF", "BAG", "PURSE", "NECKLACE", "BRACELET", "CHARM", "HAIR"]),
-        ("节日季节", ["CHRISTMAS", "EASTER", "HALLOWEEN", "VALENTINE", "PARTY", "BIRTHDAY"]),
-    ]
-    for category, keywords in rules:
-        if any(keyword in text for keyword in keywords):
-            return category
-    return "其他商品"
+CATEGORY_CN = {
+    "Electronics": "电子产品",
+    "Clothing": "服饰",
+    "Home": "家居",
+    "Books": "图书",
+    "Beauty": "美妆",
+    "Toys": "玩具",
+}
+
+CHANNEL_CN = {
+    "Organic": "自然流量",
+    "Paid Search": "付费搜索",
+    "Email": "邮件营销",
+    "Social": "社交媒体",
+}
+
+SEGMENT_CN = {
+    "New": "新客",
+    "Returning": "回访客",
+    "VIP": "VIP",
+}
+
+
+def extract_state(address: str) -> str:
+    match = re.search(r",\s*([^,]+)\s+\d{5}(?:-\d{4})?\s*$", str(address))
+    if match:
+        return match.group(1).strip()
+    parts = str(address).split(",")
+    if len(parts) >= 2:
+        return parts[-1].strip().rsplit(" ", 1)[0]
+    return "未知地区"
 
 
 def load_and_clean() -> tuple[pd.DataFrame, dict[str, int | str]]:
-    if not DATASET_XLSX.exists():
-        raise FileNotFoundError(
-            f"未找到真实数据文件：{DATASET_XLSX}。请先下载 UCI Online Retail 数据集。"
-        )
+    if not DATASET_CSV.exists():
+        raise FileNotFoundError(f"未找到数据文件：{DATASET_CSV}")
 
-    raw = pd.read_excel(DATASET_XLSX)
+    raw = pd.read_csv(DATASET_CSV)
     quality: dict[str, int | str] = {
-        "dataset": "UCI Online Retail",
+        "dataset": "Hugging Face millat/e-commerce-orders",
         "dataset_url": DATASET_URL,
+        "license": "MIT",
         "raw_rows": len(raw),
     }
 
-    df = raw.rename(
-        columns={
-            "InvoiceNo": "order_id",
-            "StockCode": "product_id",
-            "Description": "product_name",
-            "Quantity": "quantity",
-            "InvoiceDate": "order_datetime",
-            "UnitPrice": "unit_price",
-            "CustomerID": "user_id",
-            "Country": "country",
-        }
-    )
+    df = raw.copy()
+    required = [
+        "order_id",
+        "customer_id",
+        "product_id",
+        "category",
+        "price",
+        "quantity",
+        "order_date",
+        "shipping_date",
+        "delivery_status",
+        "payment_method",
+        "device_type",
+        "channel",
+        "shipping_address",
+        "customer_segment",
+    ]
+    missing_cols = [col for col in required if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"数据缺少必要字段：{missing_cols}")
 
-    df["order_id"] = df["order_id"].astype("string")
-    df["product_id"] = df["product_id"].astype("string")
-    df["product_name"] = df["product_name"].astype("string").str.strip()
-    df["country"] = df["country"].astype("string").str.strip()
-    df["order_datetime"] = pd.to_datetime(df["order_datetime"], errors="coerce")
+    for col in ["order_id", "category", "delivery_status", "payment_method", "device_type", "channel", "customer_segment"]:
+        df[col] = df[col].astype("string").str.strip()
+    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+    df["shipping_date"] = pd.to_datetime(df["shipping_date"], errors="coerce")
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
-    df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce")
+    df["customer_id"] = pd.to_numeric(df["customer_id"], errors="coerce")
+    df["product_id"] = pd.to_numeric(df["product_id"], errors="coerce")
 
-    df["is_cancellation"] = df["order_id"].str.upper().str.startswith("C", na=False)
-    quality["cancel_rows"] = int(df["is_cancellation"].sum())
-    quality["missing_customer_rows"] = int(df["user_id"].isna().sum())
-    quality["negative_or_zero_quantity_rows"] = int((df["quantity"] <= 0).sum())
-    quality["non_positive_price_rows"] = int((df["unit_price"] <= 0).sum())
-
-    before_required = len(df)
-    df = df.dropna(subset=["order_id", "product_id", "product_name", "order_datetime", "quantity", "unit_price", "user_id", "country"])
+    quality["missing_required_rows"] = int(df[required].isna().any(axis=1).sum())
+    before_drop = len(df)
+    df = df.dropna(subset=required)
     quality["rows_after_required_drop"] = len(df)
-    quality["required_rows_removed"] = before_required - len(df)
+    quality["required_rows_removed"] = before_drop - len(df)
 
     before_dedup = len(df)
-    df = df.drop_duplicates()
-    quality["duplicate_rows_removed"] = before_dedup - len(df)
+    df = df.drop_duplicates(subset=["order_id"])
+    quality["duplicate_orders_removed"] = before_dedup - len(df)
+    quality["non_positive_price_rows"] = int((df["price"] <= 0).sum())
+    quality["non_positive_quantity_rows"] = int((df["quantity"] <= 0).sum())
+    df = df[(df["price"] > 0) & (df["quantity"] > 0)].copy()
 
-    df["user_id"] = df["user_id"].astype(int).astype(str)
-    df["order_status"] = np.where(df["is_cancellation"] | (df["quantity"] < 0), "取消/退货", "有效购买")
-    clean_all = df.copy()
-    quality["clean_rows_before_business_filter"] = len(clean_all)
+    df["customer_id"] = df["customer_id"].astype(int).astype(str)
+    df["product_id"] = df["product_id"].astype(int).astype(str)
+    df["order_amount"] = (df["price"] * df["quantity"]).round(2)
+    df["month"] = df["order_date"].dt.to_period("M").astype(str)
+    df["order_day"] = df["order_date"].dt.date.astype(str)
+    df["shipping_days"] = (df["shipping_date"] - df["order_date"]).dt.days
+    df["category_cn"] = df["category"].map(CATEGORY_CN).fillna(df["category"])
+    df["channel_cn"] = df["channel"].map(CHANNEL_CN).fillna(df["channel"])
+    df["customer_segment_cn"] = df["customer_segment"].map(SEGMENT_CN).fillna(df["customer_segment"])
+    df["region"] = df["shipping_address"].map(extract_state)
 
-    paid = clean_all[
-        (clean_all["order_status"].eq("有效购买"))
-        & (clean_all["quantity"] > 0)
-        & (clean_all["unit_price"] > 0)
-    ].copy()
-    paid["order_amount"] = (paid["quantity"] * paid["unit_price"]).round(2)
-    paid["month"] = paid["order_datetime"].dt.to_period("M").astype(str)
-    paid["order_date"] = paid["order_datetime"].dt.date.astype(str)
-    paid["category"] = paid["product_name"].map(classify_category)
-    paid = paid.sort_values(["user_id", "order_datetime", "order_id"])
-    paid["is_repeat_order"] = paid.groupby("user_id").cumcount().gt(0)
-    paid["user_order_no"] = paid.groupby("user_id").cumcount() + 1
-    quality["valid_purchase_rows"] = len(paid)
-    quality["valid_orders"] = int(paid["order_id"].nunique())
-    quality["valid_users"] = int(paid["user_id"].nunique())
-    quality["date_min"] = str(paid["order_datetime"].min())
-    quality["date_max"] = str(paid["order_datetime"].max())
-    return paid, quality
+    df = df.sort_values(["customer_id", "order_date", "order_id"])
+    df["is_repeat_order"] = df.groupby("customer_id").cumcount().gt(0)
+    df["user_order_no"] = df.groupby("customer_id").cumcount() + 1
+
+    quality["clean_rows"] = len(df)
+    quality["valid_orders"] = int(df["order_id"].nunique())
+    quality["valid_users"] = int(df["customer_id"].nunique())
+    quality["date_min"] = str(df["order_date"].min())
+    quality["date_max"] = str(df["order_date"].max())
+    return df, quality
 
 
 def build_metrics(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     monthly = (
         df.groupby("month", as_index=False)
-        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("user_id", "nunique"))
+        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("customer_id", "nunique"))
         .sort_values("month")
     )
     monthly["avg_order_value"] = (monthly["sales"] / monthly["orders"]).round(2)
     monthly["sales"] = monthly["sales"].round(2)
 
     category = (
-        df.groupby("category", as_index=False)
-        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("user_id", "nunique"))
+        df.groupby(["category", "category_cn"], as_index=False)
+        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("customer_id", "nunique"))
         .sort_values("sales", ascending=False)
     )
     category["sales_share"] = (category["sales"] / category["sales"].sum()).round(4)
     category["sales"] = category["sales"].round(2)
 
     top_products = (
-        df.groupby(["product_id", "product_name", "category"], as_index=False)
-        .agg(sales=("order_amount", "sum"), quantity=("quantity", "sum"), orders=("order_id", "nunique"))
+        df.groupby(["product_id", "category_cn"], as_index=False)
+        .agg(sales=("order_amount", "sum"), quantity=("quantity", "sum"), orders=("order_id", "nunique"), avg_price=("price", "mean"))
         .sort_values("sales", ascending=False)
         .head(15)
     )
+    top_products["product_name"] = "商品ID-" + top_products["product_id"].astype(str)
     top_products["sales"] = top_products["sales"].round(2)
+    top_products["avg_price"] = top_products["avg_price"].round(2)
 
-    first_order = df.groupby("user_id")["order_datetime"].min().rename("first_order_datetime")
-    user_enriched = df.merge(first_order, on="user_id", how="left")
+    first_order = df.groupby("customer_id")["order_date"].min().rename("first_order_date")
+    user_enriched = df.merge(first_order, on="customer_id", how="left")
     user_enriched["user_type"] = np.where(
-        user_enriched["order_datetime"].dt.to_period("M").eq(user_enriched["first_order_datetime"].dt.to_period("M")),
+        user_enriched["order_date"].dt.to_period("M").eq(user_enriched["first_order_date"].dt.to_period("M")),
         "新用户",
         "老用户",
     )
     user_type = (
         user_enriched.groupby(["month", "user_type"], as_index=False)
-        .agg(users=("user_id", "nunique"), sales=("order_amount", "sum"))
+        .agg(users=("customer_id", "nunique"), sales=("order_amount", "sum"))
         .sort_values(["month", "user_type"])
     )
     user_type["sales"] = user_type["sales"].round(2)
 
-    user_orders = df.groupby("user_id", as_index=False).agg(orders=("order_id", "nunique"), sales=("order_amount", "sum"))
+    user_orders = df.groupby("customer_id", as_index=False).agg(orders=("order_id", "nunique"), sales=("order_amount", "sum"))
     repeat_rate = pd.DataFrame(
         {
             "metric": ["用户数", "复购用户数", "复购率"],
@@ -163,11 +187,11 @@ def build_metrics(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         }
     )
 
-    analysis_date = df["order_datetime"].max() + pd.Timedelta(days=1)
+    analysis_date = df["order_date"].max() + pd.Timedelta(days=1)
     rfm = (
-        df.groupby("user_id")
+        df.groupby("customer_id")
         .agg(
-            recency=("order_datetime", lambda x: (analysis_date - x.max()).days),
+            recency=("order_date", lambda x: (analysis_date - x.max()).days),
             frequency=("order_id", "nunique"),
             monetary=("order_amount", "sum"),
         )
@@ -194,47 +218,54 @@ def build_metrics(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     rfm["monetary"] = rfm["monetary"].round(2)
     rfm_summary = (
         rfm.groupby("segment", as_index=False)
-        .agg(users=("user_id", "nunique"), avg_recency=("recency", "mean"), avg_frequency=("frequency", "mean"), avg_monetary=("monetary", "mean"))
+        .agg(users=("customer_id", "nunique"), avg_recency=("recency", "mean"), avg_frequency=("frequency", "mean"), avg_monetary=("monetary", "mean"))
         .sort_values("avg_monetary", ascending=False)
     )
     for col in ["avg_recency", "avg_frequency", "avg_monetary"]:
         rfm_summary[col] = rfm_summary[col].round(2)
 
-    country = (
-        df.groupby("country", as_index=False)
-        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("user_id", "nunique"))
+    channel = (
+        df.groupby(["channel", "channel_cn"], as_index=False)
+        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("customer_id", "nunique"))
         .sort_values("sales", ascending=False)
     )
-    country["avg_order_value"] = (country["sales"] / country["orders"]).round(2)
-    country["sales"] = country["sales"].round(2)
+    channel["avg_order_value"] = (channel["sales"] / channel["orders"]).round(2)
+    channel["order_per_user"] = (channel["orders"] / channel["users"]).round(2)
+    channel["sales_share"] = (channel["sales"] / channel["sales"].sum()).round(4)
+    channel["sales"] = channel["sales"].round(2)
 
-    country_gap = country.copy()
-    country_gap["sales_share"] = (country_gap["sales"] / country_gap["sales"].sum()).round(4)
-    country_gap["orders_share"] = (country_gap["orders"] / country_gap["orders"].sum()).round(4)
-    country_gap["aov_index"] = (country_gap["avg_order_value"] / (df["order_amount"].sum() / df["order_id"].nunique())).round(2)
+    region = (
+        df.groupby("region", as_index=False)
+        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("customer_id", "nunique"))
+        .sort_values("sales", ascending=False)
+    )
+    region["avg_order_value"] = (region["sales"] / region["orders"]).round(2)
+    region["sales_share"] = (region["sales"] / region["sales"].sum()).round(4)
+    region["sales"] = region["sales"].round(2)
+
+    segment_metrics = (
+        df.groupby(["customer_segment", "customer_segment_cn"], as_index=False)
+        .agg(sales=("order_amount", "sum"), orders=("order_id", "nunique"), users=("customer_id", "nunique"), avg_shipping_days=("shipping_days", "mean"))
+        .sort_values("sales", ascending=False)
+    )
+    segment_metrics["avg_order_value"] = (segment_metrics["sales"] / segment_metrics["orders"]).round(2)
+    segment_metrics["avg_shipping_days"] = segment_metrics["avg_shipping_days"].round(2)
+    segment_metrics["sales"] = segment_metrics["sales"].round(2)
 
     high_value_users = rfm[rfm["segment"].eq("高价值用户")].merge(
-        df.groupby("user_id").agg(main_country=("country", lambda x: x.mode().iat[0]), favorite_category=("category", lambda x: x.mode().iat[0])),
-        on="user_id",
+        df.groupby("customer_id").agg(main_region=("region", lambda x: x.mode().iat[0]), main_channel=("channel_cn", lambda x: x.mode().iat[0]), main_category=("category_cn", lambda x: x.mode().iat[0])),
+        on="customer_id",
         how="left",
     )
     high_value_profile = pd.concat(
         [
-            high_value_users["main_country"].value_counts(normalize=True).rename_axis("dimension_value").reset_index(name="share").assign(dimension="国家/地区"),
-            high_value_users["favorite_category"].value_counts(normalize=True).rename_axis("dimension_value").reset_index(name="share").assign(dimension="偏好品类"),
+            high_value_users["main_region"].value_counts(normalize=True).rename_axis("dimension_value").reset_index(name="share").assign(dimension="地区"),
+            high_value_users["main_channel"].value_counts(normalize=True).rename_axis("dimension_value").reset_index(name="share").assign(dimension="渠道"),
+            high_value_users["main_category"].value_counts(normalize=True).rename_axis("dimension_value").reset_index(name="share").assign(dimension="偏好品类"),
         ],
         ignore_index=True,
     )
     high_value_profile["share"] = high_value_profile["share"].round(4)
-
-    channel_limitation = pd.DataFrame(
-        [
-            {
-                "item": "渠道分析限制",
-                "description": "UCI Online Retail 原始数据不包含广告渠道、流量来源或转化漏斗字段，因此本项目不伪造渠道分析，改用真实国家/地区字段做区域表现分析。",
-            }
-        ]
-    )
 
     return {
         "clean_orders": df,
@@ -245,16 +276,23 @@ def build_metrics(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "repeat_rate": repeat_rate,
         "rfm_detail": rfm,
         "rfm_summary": rfm_summary,
-        "country_metrics": country,
-        "country_gap": country_gap,
+        "channel_metrics": channel,
+        "region_metrics": region,
+        "segment_metrics": segment_metrics,
         "high_value_profile": high_value_profile,
-        "channel_limitation": channel_limitation,
     }
 
 
 def save_tables(tables: dict[str, pd.DataFrame], quality: dict[str, int | str]) -> None:
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     POWERBI_DIR.mkdir(parents=True, exist_ok=True)
+
+    stale_files = ["country_metrics.csv", "country_gap.csv", "channel_limitation.csv"]
+    for filename in stale_files:
+        path = PROCESSED_DIR / filename
+        if path.exists():
+            path.unlink()
+
     for name, table in tables.items():
         table.to_csv(PROCESSED_DIR / f"{name}.csv", index=False, encoding="utf-8-sig")
 
@@ -267,10 +305,10 @@ def save_tables(tables: dict[str, pd.DataFrame], quality: dict[str, int | str]) 
             "user_type",
             "repeat_rate",
             "rfm_summary",
-            "country_metrics",
-            "country_gap",
+            "channel_metrics",
+            "region_metrics",
+            "segment_metrics",
             "high_value_profile",
-            "channel_limitation",
         ]:
             tables[name].to_excel(writer, sheet_name=name[:31], index=False)
         pd.DataFrame([quality]).to_excel(writer, sheet_name="data_quality", index=False)
@@ -278,6 +316,10 @@ def save_tables(tables: dict[str, pd.DataFrame], quality: dict[str, int | str]) 
 
 def plot_figures(tables: dict[str, pd.DataFrame]) -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
+    for filename in ["country_sales.png", "country_aov_index.png"]:
+        path = FIG_DIR / filename
+        if path.exists():
+            path.unlink()
 
     monthly = tables["monthly_sales"]
     fig, ax1 = plt.subplots(figsize=(11, 6))
@@ -294,8 +336,8 @@ def plot_figures(tables: dict[str, pd.DataFrame]) -> None:
 
     category = tables["category_sales"].sort_values("sales")
     fig, ax = plt.subplots(figsize=(9, 5.5))
-    ax.barh(category["category"], category["sales"], color="#0f766e")
-    ax.set_title("衍生品类销售贡献")
+    ax.barh(category["category_cn"], category["sales"], color="#0f766e")
+    ax.set_title("不同品类销售贡献")
     ax.set_xlabel("销售额")
     fig.tight_layout()
     fig.savefig(FIG_DIR / "category_sales.png", dpi=180)
@@ -330,39 +372,41 @@ def plot_figures(tables: dict[str, pd.DataFrame]) -> None:
     fig.savefig(FIG_DIR / "rfm_segments.png", dpi=180)
     plt.close(fig)
 
-    country = tables["country_metrics"].head(10).sort_values("sales")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(country["country"], country["sales"], color="#1d4ed8")
-    ax.set_title("TOP10 国家/地区销售额")
-    ax.set_xlabel("销售额")
+    channel = tables["channel_metrics"].sort_values("order_per_user", ascending=False)
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    ax.bar(channel["channel_cn"], channel["order_per_user"], color="#ea580c")
+    ax.set_title("不同渠道转化效果：人均订单数")
+    ax.set_xlabel("渠道")
+    ax.set_ylabel("人均订单数")
     fig.tight_layout()
-    fig.savefig(FIG_DIR / "country_sales.png", dpi=180)
+    fig.savefig(FIG_DIR / "channel_conversion.png", dpi=180)
     plt.close(fig)
 
-    country_gap = tables["country_gap"].head(10).sort_values("aov_index")
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.barh(country_gap["country"], country_gap["aov_index"], color="#ea580c")
-    ax.axvline(1, color="#334155", linewidth=1)
-    ax.set_title("TOP10 国家/地区客单价指数")
-    ax.set_xlabel("客单价指数：整体均值=1")
+    region = tables["region_metrics"].head(12).sort_values("sales")
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.barh(region["region"], region["sales"], color="#1d4ed8")
+    ax.set_title("TOP12 地区销售额")
+    ax.set_xlabel("销售额")
     fig.tight_layout()
-    fig.savefig(FIG_DIR / "country_aov_index.png", dpi=180)
+    fig.savefig(FIG_DIR / "region_sales.png", dpi=180)
     plt.close(fig)
 
 
 def write_powerbi_notes() -> None:
-    notes = """# Power BI 仪表盘搭建说明
+    notes = f"""# Power BI 仪表盘搭建说明
 
 本项目已输出 `reports/powerbi/powerbi_dashboard_dataset.xlsx`，可直接导入 Power BI Desktop。
 
-数据来源为 UCI Machine Learning Repository 的 Online Retail 真实交易数据。原始字段包含订单号、商品编码、商品描述、数量、订单时间、单价、客户 ID 和国家/地区，不包含广告渠道或流量来源字段，因此不要在 Power BI 中伪造渠道页。
+数据来源为 Hugging Face `millat/e-commerce-orders`，许可证为 MIT。该数据集覆盖 2024-04-20 至 2025-04-19，包含品类、渠道、设备、支付方式、客户分层和地址字段。数据集说明中标注其为 synthetic dataset，适合作为电商分析、机器学习和教学项目数据。
+
+数据来源：{DATASET_URL}
 
 建议建立 4 个页面：
 
 1. 经营总览：卡片展示销售额、订单量、用户数、客单价；折线图展示 `monthly_sales` 的销售额和客单价趋势。
-2. 商品与品类：条形图展示 `category_sales` 衍生品类贡献；TOP N 条形图展示 `top_products`。
-3. 用户分析：堆积柱形图展示 `user_type` 新老用户；矩阵或条形图展示 `rfm_summary`。
-4. 国家/地区分析：条形图展示 `country_metrics` 的销售额和订单量；用 `country_gap` 展示销售占比、订单占比和客单价指数。
+2. 商品与品类：条形图展示 `category_sales` 品类贡献；TOP N 条形图展示 `top_products`。
+3. 用户分析：堆积柱形图展示 `user_type` 新老用户；矩阵或条形图展示 `rfm_summary` 和 `segment_metrics`。
+4. 渠道与地区：柱形图展示 `channel_metrics` 的人均订单数、销售额占比和客单价；条形图展示 `region_metrics` 的销售额和订单量。
 
 核心度量值建议：
 
@@ -383,8 +427,9 @@ def write_report(tables: dict[str, pd.DataFrame], quality: dict[str, int | str])
     top_products = tables["top_products"]
     repeat_rate = tables["repeat_rate"]
     rfm = tables["rfm_summary"]
-    country = tables["country_metrics"]
-    country_gap = tables["country_gap"]
+    channel = tables["channel_metrics"]
+    region = tables["region_metrics"]
+    segment_metrics = tables["segment_metrics"]
 
     total_sales = monthly["sales"].sum()
     total_orders = int(monthly["orders"].sum())
@@ -393,16 +438,18 @@ def write_report(tables: dict[str, pd.DataFrame], quality: dict[str, int | str])
     best_month = monthly.loc[monthly["sales"].idxmax()]
     best_category = category.iloc[0]
     best_product = top_products.iloc[0]
-    best_country = country.iloc[0]
-    weak_country = country[country["orders"] >= 10].iloc[-1]
-    high_aov_country = country_gap[country_gap["orders"] >= 10].sort_values("aov_index", ascending=False).iloc[0]
+    best_channel = channel.iloc[0]
+    efficient_channel = channel.sort_values("order_per_user", ascending=False).iloc[0]
+    best_region = region.iloc[0]
+    weak_region = region[region["orders"] >= 20].iloc[-1]
+    best_segment = segment_metrics.iloc[0]
     repurchase = float(repeat_rate.loc[repeat_rate["metric"].eq("复购率"), "value"].iloc[0])
     high_value = rfm[rfm["segment"].eq("高价值用户")]
     high_value_text = "暂无明显高价值用户分组"
     if not high_value.empty:
         high_value_text = (
             f"高价值用户共 {int(high_value['users'].iloc[0])} 人，"
-            f"平均消费 {high_value['avg_monetary'].iloc[0]:.2f} 英镑，"
+            f"平均消费 {high_value['avg_monetary'].iloc[0]:.2f} 美元，"
             f"平均购买 {high_value['avg_frequency'].iloc[0]:.2f} 次。"
         )
 
@@ -410,55 +457,59 @@ def write_report(tables: dict[str, pd.DataFrame], quality: dict[str, int | str])
 
 ## 一、数据来源
 
-本项目已替换为公开真实数据集：UCI Machine Learning Repository 的 **Online Retail** 数据集。该数据集记录了英国一家无实体店电商在 2010-12-01 至 2011-12-09 之间的真实交易流水，原始文件约 54.19 万行，字段包括订单号、商品编码、商品描述、数量、订单时间、单价、客户 ID 和国家/地区。
+本项目已替换为 2024 年之后的数据集：Hugging Face 的 **millat/e-commerce-orders**。数据覆盖 **2024-04-20 至 2025-04-19**，共 {quality['raw_rows']} 条订单，字段包含订单、客户、商品、品类、价格、数量、订单日期、发货日期、配送状态、支付方式、设备类型、营销渠道、地址和客户分层。
 
 数据来源：{DATASET_URL}
 
-需要说明的是，原始数据不包含广告渠道、流量来源或转化漏斗字段。因此本报告不伪造渠道结论，渠道部分改为说明数据限制，并重点完成真实的国家/地区表现分析。
+许可证：MIT。
+
+重要说明：该数据集的数据卡明确标注为 synthetic dataset，也就是近年公开合成电商订单数据。它不是某家企业公开的真实流水，但字段完整、时间较新，适合用来展示电商分析作品集能力。
 
 ## 二、数据清洗
 
-原始数据共有 {quality['raw_rows']} 行记录。清洗过程中完成了以下处理：
+清洗过程中完成了以下处理：
 
-- 统一订单时间字段为标准日期时间，并派生月份字段。
-- 删除客户 ID、商品、日期、数量、单价等关键字段缺失的记录，保留 {quality['rows_after_required_drop']} 行。
-- 识别取消订单和退货记录：取消/退货相关行数为 {quality['cancel_rows']} 行。
-- 删除重复明细行 {quality['duplicate_rows_removed']} 行。
-- 过滤数量小于等于 0、单价小于等于 0 的记录，仅保留有效购买明细。
-- 计算订单金额 `order_amount = quantity * unit_price`。
-- 根据客户历史购买顺序计算复购标记 `is_repeat_order`。
-- 基于商品描述关键词派生中文品类字段，用于品类贡献分析。
+- 统一订单日期和发货日期为标准日期时间格式。
+- 检查订单号、客户 ID、商品 ID、品类、价格、数量、渠道、地址等关键字段缺失情况。
+- 删除关键字段缺失记录，清洗后保留 {quality['rows_after_required_drop']} 行。
+- 按订单号识别并删除重复订单 {quality['duplicate_orders_removed']} 行。
+- 过滤价格小于等于 0、数量小于等于 0 的异常记录。
+- 计算订单金额 `order_amount = price * quantity`。
+- 计算发货间隔 `shipping_days = shipping_date - order_date`。
+- 将英文品类、渠道和客户分层映射为中文展示字段。
+- 从收货地址中提取州/地区字段，用于地区销售分析。
+- 按客户历史订单顺序计算复购标记 `is_repeat_order`。
 
-清洗后有效购买明细为 {quality['valid_purchase_rows']} 行，覆盖 {quality['valid_orders']} 个订单和 {quality['valid_users']} 位客户。
+清洗后有效订单为 {quality['clean_rows']} 行，覆盖 {quality['valid_users']} 位客户。
 
 ## 三、核心经营指标
 
-- 总销售额：{total_sales:,.2f} 英镑
+- 总销售额：{total_sales:,.2f} 美元
 - 总订单量：{total_orders:,} 单
 - 有效用户数：{total_users:,} 人
-- 客单价：{avg_order_value:,.2f} 英镑
+- 客单价：{avg_order_value:,.2f} 美元
 - 复购率：{repurchase:.2%}
-- 销售峰值月份：{best_month['month']}，销售额 {best_month['sales']:,.2f} 英镑
+- 销售峰值月份：{best_month['month']}，销售额 {best_month['sales']:,.2f} 美元
 
-销售峰值集中在 2011 年 11 月，符合礼品电商在圣诞季前备货和采购集中的业务规律。客单价与销售额并不完全同步，说明增长既受订单量影响，也受批发客户的大额采购影响。
+从整体看，订单覆盖完整 12 个月，适合做月度趋势和渠道对比。销售峰值月份为 {best_month['month']}，需要结合渠道投放、品类结构和客户分层继续拆解。
 
 ## 四、销售分析
 
 ### 1. 每月销售额趋势
 
-2011 年下半年销售额明显走高，11 月达到峰值。12 月数据只覆盖到 12 月 9 日，不能直接与完整月份比较。
+月度销售额整体波动较平稳，说明样本没有极端大促峰值。若用于真实业务复盘，可以进一步叠加促销日历、广告预算和库存变化解释峰谷。
 
 ![每月销售额与客单价趋势](figures/monthly_sales_aov.png)
 
 ### 2. 不同品类销售贡献
 
-由于 UCI 原始数据没有标准品类字段，本项目根据商品描述派生了中文品类。销售贡献最高的衍生品类是 **{best_category['category']}**，销售额为 {best_category['sales']:,.2f} 英镑，占比 {best_category['sales_share']:.2%}。
+销售贡献最高的品类是 **{best_category['category_cn']}**，销售额为 {best_category['sales']:,.2f} 美元，占比 {best_category['sales_share']:.2%}。该品类应优先关注毛利、库存周转和渠道投放效率。
 
-![衍生品类销售贡献](figures/category_sales.png)
+![不同品类销售贡献](figures/category_sales.png)
 
 ### 3. TOP 商品分析
 
-销售额最高的商品是 **{best_product['product_name']}**，销售额为 {best_product['sales']:,.2f} 英镑，销量 {int(best_product['quantity'])} 件。TOP 商品往往体现平台主力商品池，应重点关注库存、补货和组合销售。
+销售额最高的商品是 **{best_product['product_name']}**，销售额为 {best_product['sales']:,.2f} 美元，销量 {int(best_product['quantity'])} 件。TOP 商品适合做组合推荐、广告素材主推和复购提醒。
 
 ![TOP 商品分析](figures/top_products.png)
 
@@ -466,13 +517,13 @@ def write_report(tables: dict[str, pd.DataFrame], quality: dict[str, int | str])
 
 ### 1. 新老用户占比
 
-新用户在早期月份占比较高，后续老用户贡献逐步上升，说明该电商存在较强复购和批发客户沉淀。
+新老用户结构可以帮助判断增长质量。若新用户占比高但复购不足，说明获客后沉淀弱；若老用户占比高但新客不足，则需要加大拉新渠道测试。
 
 ![新老用户占比](figures/new_old_users.png)
 
 ### 2. 用户复购率
 
-当前复购率为 **{repurchase:.2%}**。对于礼品类和批发型电商，复购用户是稳定销售的重要来源。后续运营应重点维护高频和高消费客户。
+当前复购率为 **{repurchase:.2%}**。复购率较高说明样本中客户重复下单明显，适合进一步做会员分层、复购券和自动化触达。
 
 ### 3. RFM 用户分层
 
@@ -480,34 +531,40 @@ def write_report(tables: dict[str, pd.DataFrame], quality: dict[str, int | str])
 
 ![RFM 用户分层](figures/rfm_segments.png)
 
-高价值用户的特征是近期购买、购买频次高、累计消费高。建议为该群体配置提前补货提醒、批量采购折扣和重点客户服务。
+高价值用户的特征是近期购买、频次高、累计消费高。建议优先配置会员权益、专属折扣、组合推荐和新品提前触达。
 
-## 六、国家/地区分析
+### 4. 高价值用户画像
 
-### 1. 不同国家/地区销售额和订单量
+高价值用户画像从地区、渠道和偏好品类三个维度输出在 `high_value_profile.csv` 中，可直接用于 Power BI 的画像页。
 
-销售额最高的国家/地区是 **{best_country['country']}**，销售额为 {best_country['sales']:,.2f} 英镑；在订单量不少于 10 单的地区中，销售额较低的地区之一是 **{weak_country['country']}**，销售额为 {weak_country['sales']:,.2f} 英镑。
+客户分层中销售额最高的是 **{best_segment['customer_segment_cn']}**，销售额为 {best_segment['sales']:,.2f} 美元，客单价为 {best_segment['avg_order_value']:.2f} 美元。
 
-![国家/地区销售额](figures/country_sales.png)
+## 六、渠道与地区分析
 
-### 2. 表现差异较大的地区
+### 1. 不同渠道转化效果
 
-客单价指数最高的国家/地区是 **{high_aov_country['country']}**，指数为 {high_aov_country['aov_index']:.2f}。这说明部分地区虽然订单量不一定最大，但单笔订单价值更高，适合用更精细的客户维护和高价值商品推荐。
+销售额最高的渠道是 **{best_channel['channel_cn']}**，销售额为 {best_channel['sales']:,.2f} 美元，占比 {best_channel['sales_share']:.2%}；人均订单数最高的渠道是 **{efficient_channel['channel_cn']}**，人均订单数为 {efficient_channel['order_per_user']:.2f}。
 
-![国家/地区客单价指数](figures/country_aov_index.png)
+![渠道转化效果](figures/channel_conversion.png)
 
-### 3. 渠道分析限制
+### 2. 不同地区销售额和订单量
 
-该真实数据集没有渠道字段，因此不能真实回答“不同渠道转化效果”。如果业务方提供广告渠道、访问来源、点击、加购、支付等漏斗字段，可以继续补充渠道转化率、渠道 ROI、渠道客单价和渠道复购率分析。
+销售额最高地区是 **{best_region['region']}**，销售额为 {best_region['sales']:,.2f} 美元；在订单量不少于 20 单的地区中，销售额较低的地区之一是 **{weak_region['region']}**，销售额为 {weak_region['sales']:,.2f} 美元。
+
+![地区销售额](figures/region_sales.png)
+
+### 3. 表现差异较大的地区或渠道
+
+渠道上，销售额第一和人均订单数第一可能不同，说明“规模”和“效率”要分开看。地区上，头部地区贡献明显高于尾部地区，后续可以结合物流时效、客户分层和品类偏好继续拆解。
 
 ## 七、业务建议
 
-1. 重点备货和维护 TOP 商品，尤其在 9-11 月提前做库存计划，避免旺季缺货。
-2. 对高价值客户建立 RFM 运营名单，配置批量采购折扣、提前购提醒和专属客服。
-3. 对高客单价国家/地区优先推荐礼盒、套装和高毛利商品，提高单客价值。
-4. 对低销售地区先排查物流成本、配送时效和本地需求，再决定是否扩大投放。
-5. 品类字段目前为规则派生，后续若有真实商品类目，应替换规则分类以提高分析精度。
-6. 渠道分析必须依赖真实渠道字段，不建议用随机渠道或人为分配渠道替代。
+1. 对销售贡献最高的品类提高库存保障，并围绕 TOP 商品设计组合推荐。
+2. 对高价值用户建立 RFM 运营名单，配置专属券、新品提前购和复购提醒。
+3. 对高销售渠道继续拆解客单价和人均订单数，避免只按销售额分配预算。
+4. 对人均订单数高但销售规模较小的渠道做预算小幅放大测试。
+5. 对弱势地区先检查配送时效、品类偏好和渠道覆盖，再决定是否扩大投放。
+6. Power BI 仪表盘建议按“经营总览、商品品类、用户分层、渠道地区”四页组织。
 
 ## 八、项目产出
 
@@ -529,7 +586,7 @@ def main() -> None:
     plot_figures(tables)
     write_powerbi_notes()
     write_report(tables, quality)
-    print(f"valid purchase rows: {len(clean_orders)}")
+    print(f"clean orders: {len(clean_orders)}")
     print(f"report: {REPORT_DIR / 'analysis_report.md'}")
 
 

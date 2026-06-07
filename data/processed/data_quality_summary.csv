@@ -1,2 +1,2 @@
-﻿dataset,dataset_url,raw_rows,cancel_rows,missing_customer_rows,negative_or_zero_quantity_rows,non_positive_price_rows,rows_after_required_drop,required_rows_removed,duplicate_rows_removed,clean_rows_before_business_filter,valid_purchase_rows,valid_orders,valid_users,date_min,date_max
-UCI Online Retail,https://archive.ics.uci.edu/dataset/352/online+retail,541909,9288,135080,10624,2517,406829,135080,5225,401604,392692,18532,4338,2010-12-01 08:26:00,2011-12-09 12:50:00
+﻿dataset,dataset_url,license,raw_rows,missing_required_rows,rows_after_required_drop,required_rows_removed,duplicate_orders_removed,non_positive_price_rows,non_positive_quantity_rows,clean_rows,valid_orders,valid_users,date_min,date_max
+Hugging Face millat/e-commerce-orders,https://huggingface.co/datasets/millat/e-commerce-orders,MIT,10000,0,10000,0,0,0,0,10000,10000,2713,2024-04-20 14:59:58.897063,2025-04-19 14:59:58.897063
