@@ -1,2 +1,2 @@
-﻿raw_rows,rows_after_required_drop,duplicate_orders_removed,clean_rows,paid_clean_rows
-3645,3583,43,3540,3236
+﻿dataset,dataset_url,raw_rows,cancel_rows,missing_customer_rows,negative_or_zero_quantity_rows,non_positive_price_rows,rows_after_required_drop,required_rows_removed,duplicate_rows_removed,clean_rows_before_business_filter,valid_purchase_rows,valid_orders,valid_users,date_min,date_max
+UCI Online Retail,https://archive.ics.uci.edu/dataset/352/online+retail,541909,9288,135080,10624,2517,406829,135080,5225,401604,392692,18532,4338,2010-12-01 08:26:00,2011-12-09 12:50:00
